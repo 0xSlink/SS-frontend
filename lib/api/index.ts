@@ -5078,3 +5078,127 @@ export async function cancelInvoiceAssignment(
   const raw = await res.json();
   return normalizeInvoiceAssignment(raw, invoiceId);
 }
+
+/* ─── Restructuring proposal voting (#589) ─────────────────────────────────── */
+
+export type RestructureVoteDecision = "accept" | "reject";
+export type RestructureProposalStatus = "active" | "executed" | "failed";
+
+export interface RestructureProposal {
+  id: string;
+  invoice_id: string;
+  /** Haircut percentage reduction (0-100), e.g. 20 means 20% haircut and 80% recovery. */
+  haircut_percentage: number;
+  /** Proposed new due date (ISO timestamp). */
+  new_due_date: string;
+  /** Total principal eligible to vote, in XLM. */
+  total_principal: number;
+  /** Principal weight that voted to accept, in XLM. */
+  accepted_principal: number;
+  /** Principal weight that voted to reject, in XLM. */
+  rejected_principal: number;
+  /** Configured supermajority threshold in percent (e.g. 66.67 or 75). */
+  supermajority_threshold_pct: number;
+  /** Voting period end timestamp (ISO string). */
+  ends_at: string;
+  status: RestructureProposalStatus;
+  /** Optional map of wallet address -> vote decision. */
+  voted_wallets?: Record<string, RestructureVoteDecision>;
+  /** Optional connected investor's recorded vote decision. */
+  user_vote?: RestructureVoteDecision | null;
+  reason?: string | null;
+}
+
+/**
+ * Computes an investor's recovery amount after applying the proposal's haircut
+ * percentage (#589).
+ */
+export function calculateRestructureRecovery(
+  investorClaim: number,
+  haircutPercentage: number,
+): number {
+  if (!(investorClaim > 0)) return 0;
+  const clampedHaircut = Math.min(100, Math.max(0, haircutPercentage));
+  const recovery = investorClaim * (1 - clampedHaircut / 100);
+  return Math.round(recovery * 100) / 100;
+}
+
+function normalizeRestructureProposal(raw: any, invoiceId: string): RestructureProposal {
+  const rawStatus = String(raw?.status ?? "active").toLowerCase();
+  const status: RestructureProposalStatus =
+    rawStatus === "executed"
+      ? "executed"
+      : rawStatus === "failed" || rawStatus === "rejected"
+        ? "failed"
+        : "active";
+
+  return {
+    id: String(raw?.id ?? raw?.proposal_id ?? `restructure-${invoiceId}`),
+    invoice_id: String(raw?.invoice_id ?? raw?.invoiceId ?? invoiceId),
+    haircut_percentage: Number(
+      raw?.haircut_percentage ?? raw?.haircutPercentage ?? raw?.haircut ?? 0,
+    ),
+    new_due_date: String(
+      raw?.new_due_date ?? raw?.newDueDate ?? raw?.proposed_due_date ?? "",
+    ),
+    total_principal: Number(
+      raw?.total_principal ?? raw?.totalPrincipal ?? raw?.total_weight ?? 0,
+    ),
+    accepted_principal: Number(
+      raw?.accepted_principal ?? raw?.acceptedPrincipal ?? raw?.votes_for ?? 0,
+    ),
+    rejected_principal: Number(
+      raw?.rejected_principal ?? raw?.rejectedPrincipal ?? raw?.votes_against ?? 0,
+    ),
+    supermajority_threshold_pct: Number(
+      raw?.supermajority_threshold_pct ??
+        raw?.supermajorityThresholdPct ??
+        raw?.supermajority_threshold ??
+        raw?.threshold_pct ??
+        66.67,
+    ),
+    ends_at: String(raw?.ends_at ?? raw?.endsAt ?? ""),
+    status,
+    voted_wallets:
+      raw?.voted_wallets && typeof raw.voted_wallets === "object"
+        ? raw.voted_wallets
+        : undefined,
+    user_vote: raw?.user_vote ?? raw?.userVote ?? null,
+    reason: raw?.reason ?? null,
+  };
+}
+
+export async function fetchRestructureProposal(
+  invoiceId: string,
+  wallet?: string | null,
+): Promise<RestructureProposal | null> {
+  const query = wallet ? `?wallet=${encodeURIComponent(wallet)}` : "";
+  const res = await fetch(
+    `${API_BASE}/invoices/${encodeURIComponent(invoiceId)}/restructure-proposal${query}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Failed to fetch restructuring proposal");
+  const raw = await res.json();
+  return normalizeRestructureProposal(raw, invoiceId);
+}
+
+export async function voteOnRestructureProposal(
+  invoiceId: string,
+  body: {
+    wallet: string;
+    decision: RestructureVoteDecision;
+    principal?: number;
+  },
+): Promise<RestructureProposal> {
+  const res = await fetch(
+    `${API_BASE}/invoices/${encodeURIComponent(invoiceId)}/restructure-proposal/votes`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "vote_restructure", ...body }),
+    },
+  );
+  if (!res.ok) throw new Error("Failed to submit restructuring vote");
+  const raw = await res.json();
+  return normalizeRestructureProposal(raw, invoiceId);
+}
