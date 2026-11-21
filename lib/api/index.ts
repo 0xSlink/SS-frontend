@@ -3067,6 +3067,43 @@ export async function investInPool(
   return res.json();
 }
 
+export type { PoolRateModel, PoolRateModelParams } from "@/lib/pools";
+
+/** Fetches the dynamic utilization rate model parameters and current point for a pool (#598). */
+export async function fetchPoolRateModel(poolId: string): Promise<import("@/lib/pools").PoolRateModel> {
+  const res = await fetch(`${API_BASE}/pools/${encodeURIComponent(poolId)}/rate-model`);
+  if (res.status === 404) throw new ApiNotFoundError("Pool rate model not found");
+  if (!res.ok) throw new Error("Failed to fetch pool rate model");
+  const raw = await res.json();
+  const base_rate = Number(raw.base_rate ?? raw.baseRate ?? 0);
+  const kink_utilization = Number(raw.kink_utilization ?? raw.kinkUtilization ?? raw.kink ?? 80);
+  const slope_1 = Number(raw.slope_1 ?? raw.slope1 ?? 0);
+  const slope_2 = Number(raw.slope_2 ?? raw.slope2 ?? 0);
+  const current_utilization = Number(
+    raw.current_utilization ?? raw.currentUtilization ?? raw.utilization ?? 0,
+  );
+  const { calculatePoolYieldAtUtilization } = await import("@/lib/pools");
+  const current_rate =
+    raw.current_rate !== undefined || raw.currentRate !== undefined
+      ? Number(raw.current_rate ?? raw.currentRate)
+      : calculatePoolYieldAtUtilization(current_utilization, {
+          base_rate,
+          kink_utilization,
+          slope_1,
+          slope_2,
+        });
+
+  return {
+    pool_id: String(raw.pool_id ?? raw.poolId ?? poolId),
+    base_rate,
+    kink_utilization,
+    slope_1,
+    slope_2,
+    current_utilization,
+    current_rate,
+  };
+}
+
 /* ─── Pool subscriptions (#544) ────────────────────────────────────────────
  * A subscription invests a fixed amount into a pool on a schedule. Creating
  * one submits `create_subscription`; cancelling submits `cancel_subscription`.
