@@ -70,6 +70,8 @@ export interface Invoice {
   is_disputed?: boolean;
   /** Whether the invoice is currently settling (#590). */
   is_settling?: boolean;
+  /** On-chain issuer tier for marketplace card display (#604). */
+  issuer_tier?: import("@/lib/issuers").IssuerTierName | null;
 }
 
 /** Sector average yield and how many invoices it was computed from (#530). */
@@ -5201,4 +5203,116 @@ export async function voteOnRestructureProposal(
   if (!res.ok) throw new Error("Failed to submit restructuring vote");
   const raw = await res.json();
   return normalizeRestructureProposal(raw, invoiceId);
+}
+
+/* ─── Issuer tier, limits & progress (#604) ────────────────────────────────── */
+
+export type {
+  IssuerTierConfig,
+  IssuerTierDemotion,
+  IssuerTierHistoryCounts,
+  IssuerTierLimits,
+  IssuerTierName,
+  IssuerTierNextRequirements,
+  IssuerTierStatus,
+} from "@/lib/issuers";
+
+export async function fetchIssuerTier(
+  address: string,
+): Promise<import("@/lib/issuers").IssuerTierStatus | null> {
+  const res = await fetch(`${API_BASE}/issuers/${encodeURIComponent(address)}/tier`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Failed to fetch issuer tier");
+  const raw = await res.json();
+
+  const {
+    ISSUER_TIER_CONFIGS,
+    getNextIssuerTier,
+    normalizeIssuerTierName,
+  } = await import("@/lib/issuers");
+
+  const tier = normalizeIssuerTierName(raw?.tier);
+  const config = ISSUER_TIER_CONFIGS[tier];
+  const limitsRaw = raw?.limits ?? raw ?? {};
+  const historyRaw = raw?.history ?? raw ?? {};
+
+  const nextTier = getNextIssuerTier(tier);
+  const nextRaw = raw?.next_tier_requirements ?? raw?.nextTierRequirements;
+  const next_tier_requirements = nextTier
+    ? {
+        next_tier: nextRaw?.next_tier
+          ? normalizeIssuerTierName(nextRaw.next_tier)
+          : nextTier,
+        required_settled_count: Number(
+          nextRaw?.required_settled_count ??
+            nextRaw?.requiredSettledCount ??
+            ISSUER_TIER_CONFIGS[nextTier].min_settled_count,
+        ),
+        max_allowed_late_count: Number(
+          nextRaw?.max_allowed_late_count ??
+            nextRaw?.maxAllowedLateCount ??
+            ISSUER_TIER_CONFIGS[nextTier].max_late_count,
+        ),
+      }
+    : null;
+
+  const demotionRaw = raw?.demotion;
+  const demotion =
+    demotionRaw && (demotionRaw.demoted || demotionRaw.reason)
+      ? {
+          demoted: Boolean(demotionRaw.demoted ?? true),
+          previous_tier: demotionRaw.previous_tier
+            ? normalizeIssuerTierName(demotionRaw.previous_tier)
+            : null,
+          reason: String(
+            demotionRaw.reason ?? "Demoted due to an invoice default.",
+          ),
+          demoted_at: demotionRaw.demoted_at ?? demotionRaw.demotedAt ?? null,
+        }
+      : raw?.demoted || raw?.demotion_reason
+        ? {
+            demoted: true,
+            previous_tier: raw?.previous_tier
+              ? normalizeIssuerTierName(raw.previous_tier)
+              : null,
+            reason: String(
+              raw.demotion_reason ?? "Demoted due to an invoice default.",
+            ),
+            demoted_at: raw?.demoted_at ?? null,
+          }
+        : null;
+
+  return {
+    address: String(raw?.address ?? raw?.wallet ?? address),
+    tier,
+    limits: {
+      max_invoice_value: Number(
+        limitsRaw.max_invoice_value ??
+          limitsRaw.maxInvoiceValue ??
+          config.max_invoice_value,
+      ),
+      max_open_exposure: Number(
+        limitsRaw.max_open_exposure ??
+          limitsRaw.maxOpenExposure ??
+          config.max_open_exposure,
+      ),
+      current_open_exposure: Number(
+        limitsRaw.current_open_exposure ??
+          limitsRaw.currentOpenExposure ??
+          limitsRaw.open_exposure ??
+          0,
+      ),
+    },
+    history: {
+      settled_count: Number(
+        historyRaw.settled_count ?? historyRaw.settledCount ?? 0,
+      ),
+      late_count: Number(historyRaw.late_count ?? historyRaw.lateCount ?? 0),
+      defaulted_count: Number(
+        historyRaw.defaulted_count ?? historyRaw.defaultedCount ?? 0,
+      ),
+    },
+    next_tier_requirements,
+    demotion,
+  };
 }
