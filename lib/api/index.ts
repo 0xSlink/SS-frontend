@@ -64,6 +64,12 @@ export interface Invoice {
     junior_filled: number; junior_yield_premium_bps: number; is_settled: boolean;
   } | null;
   impact_report?: { type: "environmental" | "social" | "governance" | "combined"; metrics_hash: string; verified: boolean; submitted_at?: string } | null;
+  /** Current debtor address obligated on this invoice (#590). */
+  debtor?: string | null;
+  /** Whether the invoice is currently under dispute (#590). */
+  is_disputed?: boolean;
+  /** Whether the invoice is currently settling (#590). */
+  is_settling?: boolean;
 }
 
 /** Sector average yield and how many invoices it was computed from (#530). */
@@ -4938,4 +4944,137 @@ export async function fetchInvoiceLeaderboard(
   );
   if (!res.ok) throw new Error("Failed to fetch invoice leaderboard");
   return res.json();
+}
+
+/* ─── Debtor assignment consent flow (#590) ────────────────────────────────── */
+
+export type InvoiceAssignmentParty = "issuer" | "old_debtor" | "new_debtor";
+export type InvoiceAssignmentStatus = "none" | "pending" | "finalized" | "cancelled";
+
+export interface InvoiceAssignmentConsents {
+  issuer: boolean;
+  old_debtor: boolean;
+  new_debtor: boolean;
+}
+
+export interface InvoiceAssignment {
+  invoice_id: string;
+  status: InvoiceAssignmentStatus;
+  issuer_address: string;
+  current_debtor: string;
+  old_debtor: string;
+  proposed_new_debtor: string | null;
+  consents: InvoiceAssignmentConsents;
+  is_disputed?: boolean;
+  is_settling?: boolean;
+  blocked_reason?: string | null;
+  updated_at?: string | null;
+}
+
+function normalizeInvoiceAssignment(raw: any, invoiceId: string): InvoiceAssignment {
+  const consentsRaw = raw?.consents ?? {};
+  const consents: InvoiceAssignmentConsents = {
+    issuer: Boolean(consentsRaw.issuer ?? raw?.issuer_consented ?? raw?.issuerConsented ?? false),
+    old_debtor: Boolean(
+      consentsRaw.old_debtor ??
+        consentsRaw.oldDebtor ??
+        raw?.old_debtor_consented ??
+        raw?.oldDebtorConsented ??
+        false,
+    ),
+    new_debtor: Boolean(
+      consentsRaw.new_debtor ??
+        consentsRaw.newDebtor ??
+        raw?.new_debtor_consented ??
+        raw?.newDebtorConsented ??
+        false,
+    ),
+  };
+
+  const allConsented = consents.issuer && consents.old_debtor && consents.new_debtor;
+  const proposed =
+    raw?.proposed_new_debtor ?? raw?.proposedNewDebtor ?? raw?.new_debtor ?? null;
+  const oldDebtor = String(raw?.old_debtor ?? raw?.oldDebtor ?? raw?.current_debtor ?? "");
+
+  let status: InvoiceAssignmentStatus = (raw?.status ?? "none") as InvoiceAssignmentStatus;
+  if (status === "pending" && allConsented && proposed) {
+    status = "finalized";
+  }
+
+  const currentDebtor =
+    status === "finalized" && proposed
+      ? String(proposed)
+      : String(raw?.current_debtor ?? raw?.currentDebtor ?? oldDebtor);
+
+  return {
+    invoice_id: String(raw?.invoice_id ?? raw?.invoiceId ?? invoiceId),
+    status,
+    issuer_address: String(raw?.issuer_address ?? raw?.issuerAddress ?? raw?.issuer ?? ""),
+    current_debtor: currentDebtor,
+    old_debtor: oldDebtor,
+    proposed_new_debtor: proposed ? String(proposed) : null,
+    consents,
+    is_disputed: Boolean(raw?.is_disputed ?? raw?.isDisputed ?? false),
+    is_settling: Boolean(raw?.is_settling ?? raw?.isSettling ?? false),
+    blocked_reason: raw?.blocked_reason ?? raw?.blockedReason ?? null,
+    updated_at: raw?.updated_at ?? raw?.updatedAt ?? null,
+  };
+}
+
+export async function fetchInvoiceAssignment(
+  invoiceId: string,
+): Promise<InvoiceAssignment | null> {
+  const res = await fetch(`${API_BASE}/invoices/${encodeURIComponent(invoiceId)}/assignment`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Failed to fetch invoice assignment");
+  const raw = await res.json();
+  return normalizeInvoiceAssignment(raw, invoiceId);
+}
+
+export async function proposeInvoiceAssignment(
+  invoiceId: string,
+  body: { proposed_new_debtor: string; wallet: string },
+): Promise<InvoiceAssignment> {
+  const res = await fetch(`${API_BASE}/invoices/${encodeURIComponent(invoiceId)}/assignment`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method: "propose_assignment", ...body }),
+  });
+  if (!res.ok) throw new Error("Failed to propose debtor assignment");
+  const raw = await res.json();
+  return normalizeInvoiceAssignment(raw, invoiceId);
+}
+
+export async function consentInvoiceAssignment(
+  invoiceId: string,
+  body: { party: InvoiceAssignmentParty; wallet: string },
+): Promise<InvoiceAssignment> {
+  const res = await fetch(
+    `${API_BASE}/invoices/${encodeURIComponent(invoiceId)}/assignment/consent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "consent_assignment", ...body }),
+    },
+  );
+  if (!res.ok) throw new Error("Failed to record assignment consent");
+  const raw = await res.json();
+  return normalizeInvoiceAssignment(raw, invoiceId);
+}
+
+export async function cancelInvoiceAssignment(
+  invoiceId: string,
+  body: { wallet: string },
+): Promise<InvoiceAssignment> {
+  const res = await fetch(
+    `${API_BASE}/invoices/${encodeURIComponent(invoiceId)}/assignment/cancel`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ method: "cancel_assignment", ...body }),
+    },
+  );
+  if (!res.ok) throw new Error("Failed to cancel debtor assignment");
+  const raw = await res.json();
+  return normalizeInvoiceAssignment(raw, invoiceId);
 }

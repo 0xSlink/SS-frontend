@@ -60,6 +60,7 @@ import { CurrencyToggle } from "@/components/layout/CurrencyToggle";
 import { InvoiceGreylistStatus } from "@/components/invoices/InvoiceGreylistStatus";
 import { ImpactReport } from "@/components/invoices/ImpactReport";
 import { DynamicYieldCard } from "@/components/invoices/DynamicYieldCard";
+import { AssignmentBanner } from "@/components/invoices/AssignmentBanner";
 
 function InvoiceDetailSkeleton() {
   return (
@@ -319,6 +320,13 @@ export function InvoiceDetailView({ invoiceId }: InvoiceDetailViewProps) {
       <InvoiceRiskAlert invoiceId={invoice.id} />
       <InvoiceUnderReviewBanner invoiceId={invoice.id} />
       <InvoiceGreylistStatus greylist={invoice.greylist} />
+      <AssignmentBanner
+        invoiceId={invoice.id}
+        issuerAddress={invoice.seller}
+        walletAddress={address}
+        isDisputed={invoice.is_disputed}
+        isSettling={invoice.is_settling}
+      />
 
       <InvoiceFinancials
         faceValue={invoice.amount}
